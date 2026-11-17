@@ -1,4 +1,18 @@
-# React + Vite
+# SynapseWiki
+
+## Storage and desktop app
+
+The Cloudflare Pages/web build stores notes in browser IndexedDB. The Tauri
+desktop build stores each note as a `.md` file in a folder selected by the user.
+After restarting the desktop app, select the folder again if access needs to be
+renewed by the operating system.
+
+The desktop app requires Rust 1.90 or newer and the Tauri v2 prerequisites. From this folder,
+run `npm run tauri:dev` to develop or `npm run tauri:build` to package it. The
+native **File > Export Vault** and **View > Toggle Graph** menu actions are
+available in the desktop app.
+
+## Vite development
 
 This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
 

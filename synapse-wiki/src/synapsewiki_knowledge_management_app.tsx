@@ -38,6 +38,7 @@ import {
   AlertCircle,
   Play,
   Pause,
+  ArrowLeft,
   Sliders,
   PieChart,
   BookOpen,
@@ -65,82 +66,21 @@ import {
   Shield,
   File,
   Keyboard,
+  Menu,
+  MoreHorizontal,
   Scissors,
   Pin,
   PinOff,
 } from "lucide-react";
-
-// ==========================================
-// 1. INDEXEDDB DATABASE ENGINE (SynapseWikiDB)
-// ==========================================
-const DB_NAME = "SynapseWikiDB";
-const DB_VERSION = 1;
-const STORE_NOTES = "notes";
-
-const initDB = () => {
-  return new Promise((resolve, reject) => {
-    if (!window.indexedDB) {
-      reject(
-        new Error("IndexedDB is not supported in this browser environment."),
-      );
-      return;
-    }
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = (e) => {
-      const db = e.target.result;
-      if (!db.objectStoreNames.contains(STORE_NOTES)) {
-        db.createObjectStore(STORE_NOTES, { keyPath: "id" });
-      }
-    };
-    request.onsuccess = (e) => resolve(e.target.result);
-    request.onerror = (e) => reject(e.target.error);
-  });
-};
-
-const getAllNotesFromDB = async () => {
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NOTES, "readonly");
-    const store = tx.objectStore(STORE_NOTES);
-    const request = store.getAll();
-    request.onsuccess = () => resolve(request.result || []);
-    request.onerror = (e) => reject(e.target.error);
-  });
-};
-
-const saveNoteToDB = async (note) => {
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NOTES, "readwrite");
-    const store = tx.objectStore(STORE_NOTES);
-    const request = store.put(note);
-    request.onsuccess = () => resolve(true);
-    request.onerror = (e) => reject(e.target.error);
-  });
-};
-
-const deleteNoteFromDB = async (id) => {
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NOTES, "readwrite");
-    const store = tx.objectStore(STORE_NOTES);
-    const request = store.delete(id);
-    request.onsuccess = () => resolve(true);
-    request.onerror = (e) => reject(e.target.error);
-  });
-};
-
-const saveAllNotesToDB = async (notesArray) => {
-  const db = await initDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(STORE_NOTES, "readwrite");
-    const store = tx.objectStore(STORE_NOTES);
-    store.clear();
-    notesArray.forEach((note) => store.put(note));
-    tx.oncomplete = () => resolve(true);
-    tx.onerror = (e) => reject(e.target.error);
-  });
-};
+import {
+  chooseVaultLocation,
+  deleteNoteFromDB,
+  getAllNotesFromDB,
+  getVaultLocation,
+  isDesktopBuild,
+  saveAllNotesToDB,
+  saveNoteToDB,
+} from "./vaultDb";
 
 // ==========================================
 // PRE-POPULATED DEMO VAULT NOTES
@@ -440,14 +380,20 @@ const fetchWikipediaArticleMedia = async (title) => {
 // ==========================================
 // MAIN SYNAPSEWIKI REACT APPLICATION
 // ==========================================
-export default function App() {
+export default function App({ onExit }) {
   // ------------------------------------------
   // CONSOLIDATED SINGLE STATE HOOK DECLARATIONS
   // ------------------------------------------
   const [notes, setNotes] = useState([]);
   const [isDbInitialized, setIsDbInitialized] = useState(false);
+  const [vaultLocation, setVaultLocation] = useState(
+    isDesktopBuild ? null : "Browser IndexedDB",
+  );
+  const [vaultStorageError, setVaultStorageError] = useState(null);
   const [activeNoteId, setActiveNoteId] = useState(null);
   const [viewMode, setViewMode] = useState("split"); // 'canvas' | 'split' | 'editor'
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
   const [editorTab, setEditorTab] = useState("preview"); // 'edit' | 'preview'
   const [searchFilter, setSearchFilter] = useState("");
   const [selectedTag, setSelectedTag] = useState(null);
@@ -500,6 +446,8 @@ export default function App() {
   const svgRef = useRef(null);
   const editorRef = useRef(null);
   const requestRef = useRef(null);
+  const exportVaultRef = useRef(null);
+  const toggleGraphRef = useRef(null);
 
   // Toast Dispatcher
   const addToast = useCallback((message, type = "info") => {
@@ -510,10 +458,18 @@ export default function App() {
     }, 3500);
   }, []);
 
-  // Initialize IndexedDB on Mount
+  // Initialize the selected storage adapter on mount
   useEffect(() => {
     const loadVault = async () => {
       try {
+        const location = await getVaultLocation();
+        setVaultLocation(location);
+        if (isDesktopBuild && !location) {
+          setNotes([]);
+          setIsDbInitialized(true);
+          return;
+        }
+
         const storedNotes = await getAllNotesFromDB();
         if (storedNotes.length === 0) {
           await saveAllNotesToDB(INITIAL_DEMO_NOTES);
@@ -525,10 +481,20 @@ export default function App() {
         }
         setIsDbInitialized(true);
       } catch (err) {
-        console.error("IndexedDB initialization error:", err);
-        setNotes(INITIAL_DEMO_NOTES);
-        setActiveNoteId(INITIAL_DEMO_NOTES[0].id);
-        addToast("IndexedDB unavailable. Using local fallback.", "warning");
+        console.error("Vault storage initialization error:", err);
+        if (isDesktopBuild) {
+          setVaultStorageError(err.message || "The selected vault folder is unavailable.");
+          setVaultLocation(null);
+          setNotes([]);
+          setActiveNoteId(null);
+          setIsDbInitialized(true);
+          addToast("Vault folder access expired. Choose the folder again.", "warning");
+        } else {
+          setNotes(INITIAL_DEMO_NOTES);
+          setActiveNoteId(INITIAL_DEMO_NOTES[0].id);
+          setIsDbInitialized(true);
+          addToast("IndexedDB unavailable. Using local fallback.", "warning");
+        }
       }
     };
     loadVault();
@@ -601,6 +567,8 @@ export default function App() {
         setIsCommandOpen(false);
         setIsAnalyticsOpen(false);
         setIsShortcutsOpen(false);
+        setMobileSidebarOpen(false);
+        setMobileToolsOpen(false);
         setLightboxImage(null);
         setSelectedCanvasNodeId(null);
         setSelectedEdge(null);
@@ -636,7 +604,7 @@ export default function App() {
   }, [selectedCanvasNodeId, wikiNodes, pruneGhostNode]);
 
   // Vault JSON Export & Import
-  const exportVaultJSON = () => {
+  const exportVaultJSON = useCallback(() => {
     const dataStr =
       "data:text/json;charset=utf-8," +
       encodeURIComponent(JSON.stringify(notes, null, 2));
@@ -650,6 +618,75 @@ export default function App() {
     downloadAnchor.click();
     downloadAnchor.remove();
     addToast("Exported vault backup as JSON file", "success");
+  }, [notes, addToast]);
+
+  const toggleGraph = useCallback(() => {
+    setViewMode((current) => (current === "canvas" ? "split" : "canvas"));
+  }, []);
+
+  useEffect(() => {
+    exportVaultRef.current = exportVaultJSON;
+    toggleGraphRef.current = toggleGraph;
+  }, [exportVaultJSON, toggleGraph]);
+
+  useEffect(() => {
+    if (!isDesktopBuild) return undefined;
+
+    let cancelled = false;
+    let disposeMenu;
+    const installMenu = async () => {
+      try {
+        const { installNativeMenu } = await import("./nativeMenu");
+        const dispose = await installNativeMenu({
+          onExportVault: () => exportVaultRef.current?.(),
+          onToggleGraph: () => toggleGraphRef.current?.(),
+        });
+        if (cancelled) {
+          await dispose();
+        } else {
+          disposeMenu = dispose;
+        }
+      } catch (err) {
+        console.error("Native menu initialization error:", err);
+        addToast("Unable to initialize native application menus.", "error");
+      }
+    };
+
+    installMenu();
+    return () => {
+      cancelled = true;
+      if (disposeMenu) {
+        disposeMenu().catch((err) =>
+          console.error("Native menu cleanup error:", err),
+        );
+      }
+    };
+  }, [addToast]);
+
+  const handleChooseVaultLocation = async () => {
+    try {
+      const location = await chooseVaultLocation();
+      if (!location) return;
+
+      setVaultLocation(location);
+      setVaultStorageError(null);
+      const storedNotes = await getAllNotesFromDB();
+      if (storedNotes.length === 0) {
+        await saveAllNotesToDB(INITIAL_DEMO_NOTES);
+        setNotes(INITIAL_DEMO_NOTES);
+        setActiveNoteId(INITIAL_DEMO_NOTES[0].id);
+      } else {
+        setNotes(storedNotes);
+        setActiveNoteId(storedNotes[0].id);
+      }
+      setIsDbInitialized(true);
+      addToast("Connected to the selected Markdown vault folder.", "success");
+    } catch (err) {
+      console.error("Vault folder selection error:", err);
+      setVaultLocation(null);
+      setVaultStorageError(err.message || "The selected folder could not be opened.");
+      addToast("Unable to open that folder. Choose another vault folder.", "error");
+    }
   };
 
   const importVaultJSON = (event) => {
@@ -659,17 +696,24 @@ export default function App() {
       fileReader.onload = async (e) => {
         try {
           const parsed = JSON.parse(e.target.result);
-          if (Array.isArray(parsed)) {
-            await saveAllNotesToDB(parsed);
-            setNotes(parsed);
-            if (parsed.length > 0) setActiveNoteId(parsed[0].id);
-            addToast(
-              `Successfully imported ${parsed.length} notes into IndexedDB`,
-              "success",
-            );
+          if (!Array.isArray(parsed)) {
+            throw new Error("The backup must contain an array of notes.");
           }
+          await saveAllNotesToDB(parsed);
+          setNotes(parsed);
+          if (parsed.length > 0) setActiveNoteId(parsed[0].id);
+          addToast(
+            `Successfully imported ${parsed.length} notes into the vault`,
+            "success",
+          );
         } catch (err) {
-          addToast("Invalid JSON backup file", "error");
+          console.error("Vault import error:", err);
+          addToast(
+            err instanceof SyntaxError
+              ? "Invalid JSON backup file"
+              : "Could not import the vault backup",
+            "error",
+          );
         }
       };
     }
@@ -888,9 +932,16 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
 
+    try {
+      await saveNoteToDB(newNote);
+    } catch (err) {
+      console.error("Wikipedia note save error:", err);
+      addToast(`Failed to save "${wikiNode.title}"`, "error");
+      return;
+    }
+
     const updatedNotes = [...notes, newNote];
     setNotes(updatedNotes);
-    await saveNoteToDB(newNote);
     setWikiNodes((prev) =>
       prev.filter(
         (w) => w.title.toLowerCase() !== wikiNode.title.toLowerCase(),
@@ -899,7 +950,7 @@ export default function App() {
     setActiveNoteId(newNote.id);
     setPreviewingWikiNode(null);
     addToast(
-      `Imported "${wikiNode.title}" into local vault (IndexedDB saved)`,
+      `Imported "${wikiNode.title}" into the local vault`,
       "success",
     );
   };
@@ -961,10 +1012,10 @@ export default function App() {
           links: extractWikilinks(extendedContent),
           updatedAt: new Date().toISOString(),
         };
+        await saveNoteToDB(updatedNote);
         const newNotes = [...notes];
         newNotes[existingIndex] = updatedNote;
         setNotes(newNotes);
-        await saveNoteToDB(updatedNote);
         setActiveNoteId(updatedNote.id);
         addToast(
           `Extended "${targetNode.title}" with full text & ${mediaList.length} images`,
@@ -981,8 +1032,8 @@ export default function App() {
           isWikiImport: true,
           updatedAt: new Date().toISOString(),
         };
-        setNotes((prev) => [...prev, newNote]);
         await saveNoteToDB(newNote);
+        setNotes((prev) => [...prev, newNote]);
         setActiveNoteId(newNote.id);
         setPreviewingWikiNode(null);
         addToast(
@@ -1000,21 +1051,25 @@ export default function App() {
 
   // Note CRUD Operations
   const updateNoteContent = async (noteId, newContent) => {
-    setNotes((prevNotes) => {
-      const next = prevNotes.map((note) => {
-        if (note.id !== noteId) return note;
-        const updated = {
-          ...note,
-          content: newContent,
-          tags: extractTags(newContent),
-          links: extractWikilinks(newContent),
-          updatedAt: new Date().toISOString(),
-        };
-        saveNoteToDB(updated);
-        return updated;
-      });
-      return next;
-    });
+    const note = notes.find((item) => item.id === noteId);
+    if (!note) return;
+
+    const updated = {
+      ...note,
+      content: newContent,
+      tags: extractTags(newContent),
+      links: extractWikilinks(newContent),
+      updatedAt: new Date().toISOString(),
+    };
+    setNotes((prevNotes) =>
+      prevNotes.map((item) => (item.id === noteId ? updated : item)),
+    );
+    try {
+      await saveNoteToDB(updated);
+    } catch (err) {
+      console.error("Note save error:", err);
+      addToast(`Failed to save "${note.title}"`, "error");
+    }
   };
 
   const handleEditorChange = (e) => {
@@ -1073,9 +1128,16 @@ export default function App() {
       updatedAt: new Date().toISOString(),
     };
 
+    try {
+      await saveNoteToDB(newNote);
+    } catch (err) {
+      console.error("Note creation error:", err);
+      addToast(`Failed to save "${finalTitle}"`, "error");
+      return;
+    }
+
     const updated = [...notes, newNote];
     setNotes(updated);
-    await saveNoteToDB(newNote);
     setActiveNoteId(newNote.id);
     setPreviewingWikiNode(null);
     addToast(`Created note: ${finalTitle}`, "success");
@@ -1090,9 +1152,16 @@ export default function App() {
       return;
     }
 
+    try {
+      await deleteNoteFromDB(noteId);
+    } catch (err) {
+      console.error("Note deletion error:", err);
+      addToast(`Failed to delete "${target.title}"`, "error");
+      return;
+    }
+
     const remaining = notes.filter((n) => n.id !== noteId);
     setNotes(remaining);
-    await deleteNoteFromDB(noteId);
     if (activeNoteId === noteId) {
       setActiveNoteId(remaining[0].id);
     }
@@ -1147,7 +1216,13 @@ export default function App() {
   };
 
   const resetDemoVault = async () => {
-    await saveAllNotesToDB(INITIAL_DEMO_NOTES);
+    try {
+      await saveAllNotesToDB(INITIAL_DEMO_NOTES);
+    } catch (err) {
+      console.error("Vault reset error:", err);
+      addToast("Failed to reset the vault", "error");
+      return;
+    }
     setNotes(INITIAL_DEMO_NOTES);
     setActiveNoteId("note-1");
     setWikiNodes([]);
@@ -1446,11 +1521,12 @@ export default function App() {
     setPanOffset({ x: newPanX, y: newPanY });
   };
 
-  const handleCanvasMouseDown = (e) => {
+  const handleCanvasPointerDown = (e) => {
     if (
       e.target.tagName === "svg" ||
       e.target.getAttribute("data-canvas-bg") === "true"
     ) {
+      e.currentTarget.setPointerCapture(e.pointerId);
       setIsPanning(true);
       panStartRef.current = {
         x: e.clientX - panOffset.x,
@@ -1461,7 +1537,7 @@ export default function App() {
     }
   };
 
-  const handleCanvasMouseMove = (e) => {
+  const handleCanvasPointerMove = (e) => {
     if (isPanning) {
       setPanOffset({
         x: e.clientX - panStartRef.current.x,
@@ -1501,7 +1577,7 @@ export default function App() {
     }
   };
 
-  const handleCanvasMouseUp = (e) => {
+  const handleCanvasPointerUp = (e) => {
     setIsPanning(false);
 
     if (dragConnection) {
@@ -1526,8 +1602,15 @@ export default function App() {
     setDraggingNodeId(null);
   };
 
-  const handleNodeMouseDown = (e, nodeId) => {
+  const handleCanvasPointerCancel = () => {
+    setIsPanning(false);
+    setDragConnection(null);
+    setDraggingNodeId(null);
+  };
+
+  const handleNodePointerDown = (e, nodeId) => {
     e.stopPropagation();
+    e.currentTarget.setPointerCapture(e.pointerId);
     if (e.shiftKey) {
       const pos = nodePhysicsState[nodeId] || { x: 0, y: 0 };
       setDragConnection({
@@ -1896,27 +1979,58 @@ export default function App() {
   };
 
   const currentStats = getNoteStats(activeNote?.content || "");
+  const brandMark = (
+    <div className="p-2 rounded-xl bg-gradient-to-tr from-indigo-600 via-violet-600 to-cyan-500 shadow-lg shadow-indigo-500/20">
+      <Network className="w-5 h-5 text-white animate-pulse" />
+    </div>
+  );
+  const brandTitle = (
+    <div className="flex items-center space-x-2">
+      <span className="font-extrabold tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-200 to-slate-400 text-lg">
+        SynapseWiki
+      </span>
+      <span className="app-version text-[10px] uppercase font-bold tracking-widest px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
+        v2.4
+      </span>
+    </div>
+  );
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-slate-950 text-slate-100 font-sans overflow-hidden select-none">
+    <div className="app-shell flex flex-col h-screen w-full bg-slate-950 text-slate-100 font-sans overflow-hidden select-none">
       {/* HEADER NAVBAR */}
-      <header className="h-14 border-b border-slate-800/80 bg-slate-900/90 backdrop-blur-md px-4 flex items-center justify-between z-30 shrink-0">
-        <div className="flex items-center space-x-3">
-          <div className="p-2 rounded-xl bg-gradient-to-tr from-indigo-600 via-violet-600 to-cyan-500 shadow-lg shadow-indigo-500/20">
-            <Network className="w-5 h-5 text-white animate-pulse" />
-          </div>
-          <div className="flex items-center space-x-2">
-            <span className="font-extrabold tracking-wider text-transparent bg-clip-text bg-gradient-to-r from-white via-slate-200 to-slate-400 text-lg">
-              SynapseWiki
-            </span>
-            <span className="text-[10px] uppercase font-bold tracking-widest px-2 py-0.5 rounded-full bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-              v3.4
-            </span>
-          </div>
+      <header className="app-header relative h-14 border-b border-slate-800/80 bg-slate-900/90 backdrop-blur-md px-4 flex items-center justify-between z-30 shrink-0">
+        <div className="app-brand flex items-center space-x-3">
+          {onExit && (
+            <button
+              onClick={onExit}
+              className="flex items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/70 px-2 py-1.5 text-slate-400 transition hover:border-slate-700 hover:text-white"
+              aria-label="Back to home"
+              title="Back to home"
+            >
+              <ArrowLeft className="h-4 w-4" />
+              <span className="hidden sm:inline text-xs">Home</span>
+            </button>
+          )}
+          {onExit ? (
+            <button
+              type="button"
+              onClick={onExit}
+              className="app-logo flex items-center space-x-3 rounded-lg text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-indigo-400"
+              aria-label="Back to main page"
+              title="Back to main page"
+            >
+              {brandMark}
+              {brandTitle}
+            </button>
+          ) : (
+            <div className="app-logo flex items-center space-x-3">
+              {brandMark}
+              {brandTitle}
+            </div>
+          )}
         </div>
 
-        <div className="flex items-center space-x-3">
-          <div className="relative w-64 hidden md:block">
+        <div className="relative header-search w-64 hidden md:block mobile-search">
             <Search className="w-4 h-4 absolute left-3 top-2.5 text-slate-400" />
             <input
               type="text"
@@ -1933,9 +2047,10 @@ export default function App() {
                 <X className="w-3.5 h-3.5" />
               </button>
             )}
-          </div>
+        </div>
 
-          <div className="flex bg-slate-950/80 p-1 rounded-lg border border-slate-800/80 text-xs font-medium">
+        <div className="header-actions flex items-center space-x-3">
+          <div className="view-mode-control flex bg-slate-950/80 p-1 rounded-lg border border-slate-800/80 text-xs font-medium">
             <button
               onClick={() => setViewMode("canvas")}
               className={`px-3 py-1 rounded-md flex items-center space-x-1.5 transition ${
@@ -1973,7 +2088,7 @@ export default function App() {
 
           <button
             onClick={() => setIsShortcutsOpen(true)}
-            className="p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-indigo-400 transition"
+            className="mobile-utility p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-indigo-400 transition"
             title="Keyboard Shortcuts Legend"
           >
             <Keyboard className="w-3.5 h-3.5" />
@@ -1981,7 +2096,7 @@ export default function App() {
 
           <button
             onClick={() => setIsAnalyticsOpen(true)}
-            className="p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-indigo-400 transition flex items-center space-x-1 text-xs px-2"
+            className="mobile-utility p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-indigo-400 transition flex items-center space-x-1 text-xs px-2"
             title="Vault Analytics Dashboard"
           >
             <BarChart2 className="w-3.5 h-3.5" />
@@ -1990,15 +2105,36 @@ export default function App() {
 
           <button
             onClick={exportVaultJSON}
-            className="p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-emerald-400 transition flex items-center space-x-1 text-xs px-2"
+            className="mobile-utility p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-emerald-400 transition flex items-center space-x-1 text-xs px-2"
             title="Export Vault JSON Backup"
           >
             <Download className="w-3.5 h-3.5 text-emerald-400" />
             <span className="hidden lg:inline text-xs">Backup</span>
           </button>
 
+          {isDesktopBuild ? (
+            <button
+              onClick={handleChooseVaultLocation}
+              className="mobile-utility p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-indigo-300 transition flex items-center space-x-1 text-xs px-2"
+              title={vaultLocation || vaultStorageError || "Choose a local Markdown vault folder"}
+              aria-label="Choose local vault folder"
+            >
+              <Folder className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline text-xs">
+                {vaultLocation ? "Vault folder" : "Choose folder"}
+              </span>
+            </button>
+          ) : (
+            <span
+              className="hidden xl:inline text-[10px] text-slate-500"
+              title="Browser IndexedDB storage"
+            >
+              IndexedDB
+            </span>
+          )}
+
           <label
-            className="p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-cyan-400 transition flex items-center space-x-1 text-xs px-2 cursor-pointer"
+            className="mobile-utility p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-cyan-400 transition flex items-center space-x-1 text-xs px-2 cursor-pointer"
             title="Import Vault JSON Backup"
           >
             <Upload className="w-3.5 h-3.5 text-cyan-400" />
@@ -2023,23 +2159,145 @@ export default function App() {
 
           <button
             onClick={resetDemoVault}
-            className="p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-amber-400 transition"
+            className="mobile-utility p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-amber-400 transition"
             title="Reset Vault State"
           >
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
+          <button
+            onClick={() => setMobileSidebarOpen((open) => !open)}
+            className="mobile-sidebar-toggle hidden p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition"
+            aria-label={mobileSidebarOpen ? "Close vault sidebar" : "Open vault sidebar"}
+            aria-expanded={mobileSidebarOpen}
+            aria-controls="app-sidebar"
+          >
+            {mobileSidebarOpen ? (
+              <X className="w-4 h-4" />
+            ) : (
+              <Menu className="w-4 h-4" />
+            )}
+          </button>
+          <button
+            onClick={() => setMobileToolsOpen((open) => !open)}
+            className="mobile-tools-toggle hidden p-1.5 bg-slate-900 border border-slate-800 rounded-lg text-slate-400 hover:text-white transition"
+            aria-label={mobileToolsOpen ? "Close app tools" : "More app tools"}
+            aria-expanded={mobileToolsOpen}
+            aria-controls="mobile-tools-menu"
+          >
+            <MoreHorizontal className="w-4 h-4" />
+          </button>
+          {mobileToolsOpen && (
+            <div
+              id="mobile-tools-menu"
+              className="mobile-tools-menu absolute right-0 top-full z-40 mt-2 w-52 rounded-xl border border-slate-700 bg-slate-900 p-1.5 shadow-2xl md:hidden"
+            >
+              <button
+                onClick={() => {
+                  setIsShortcutsOpen(true);
+                  setMobileToolsOpen(false);
+                }}
+                className="mobile-tool-item"
+              >
+                <Keyboard className="w-4 h-4" />
+                <span>Keyboard shortcuts</span>
+              </button>
+              <button
+                onClick={() => {
+                  setIsAnalyticsOpen(true);
+                  setMobileToolsOpen(false);
+                }}
+                className="mobile-tool-item"
+              >
+                <BarChart2 className="w-4 h-4" />
+                <span>Vault analytics</span>
+              </button>
+              <button
+                onClick={() => {
+                  exportVaultJSON();
+                  setMobileToolsOpen(false);
+                }}
+                className="mobile-tool-item"
+              >
+                <Download className="w-4 h-4 text-emerald-400" />
+                <span>Backup vault</span>
+              </button>
+              <label className="mobile-tool-item cursor-pointer">
+                <Upload className="w-4 h-4 text-cyan-400" />
+                <span>Restore vault</span>
+                <input
+                  type="file"
+                  accept=".json"
+                  onChange={(event) => {
+                    importVaultJSON(event);
+                    setMobileToolsOpen(false);
+                  }}
+                  className="hidden"
+                />
+              </label>
+              <button
+                onClick={() => {
+                  resetDemoVault();
+                  setMobileToolsOpen(false);
+                }}
+                className="mobile-tool-item"
+              >
+                <RefreshCw className="w-4 h-4 text-amber-400" />
+                <span>Reset demo vault</span>
+              </button>
+            </div>
+          )}
         </div>
       </header>
+
+      {isDesktopBuild && !vaultLocation && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-950/95 p-6">
+          <section className="w-full max-w-md rounded-2xl border border-slate-800 bg-slate-900 p-6 text-center shadow-2xl">
+            <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-indigo-500/15 text-indigo-300">
+              <Folder className="h-6 w-6" />
+            </div>
+            <h2 className="text-lg font-semibold text-white">
+              Choose your vault folder
+            </h2>
+            <p className="mt-2 text-sm leading-relaxed text-slate-400">
+              SynapseWiki Desktop stores notes as Markdown files in a folder you
+              choose. Your browser-granted folder access may need to be renewed
+              when the app restarts.
+            </p>
+            {vaultStorageError && (
+              <p className="mt-3 text-sm text-rose-300">{vaultStorageError}</p>
+            )}
+            <button
+              onClick={handleChooseVaultLocation}
+              className="mt-5 inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-indigo-500"
+            >
+              <Folder className="h-4 w-4" />
+              Select folder
+            </button>
+          </section>
+        </div>
+      )}
 
       {/* BODY CONTENT */}
       <div className="flex flex-1 overflow-hidden relative">
         {/* LEFT SIDEBAR */}
-        <aside className="w-80 border-r border-slate-800/80 bg-slate-900/60 backdrop-blur-md flex flex-col z-20 shrink-0">
+        {mobileSidebarOpen && (
+          <button
+            className="sidebar-backdrop md:hidden"
+            onClick={() => setMobileSidebarOpen(false)}
+            aria-label="Close vault sidebar"
+          />
+        )}
+        <aside
+          id="app-sidebar"
+          className={`app-sidebar absolute inset-y-0 left-0 w-[85vw] max-w-80 md:relative md:inset-auto md:w-80 border-r border-slate-800/80 bg-slate-900/95 md:bg-slate-900/60 backdrop-blur-md flex-col z-20 shrink-0 ${
+            mobileSidebarOpen ? "flex" : "hidden md:flex"
+          }`}
+        >
           <div className="p-3 border-b border-slate-800/80 flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <Database className="w-4 h-4 text-emerald-400" />
               <span className="text-xs font-semibold text-slate-300 uppercase tracking-wider">
-                IndexedDB Vault
+                {isDesktopBuild ? "Markdown Vault" : "IndexedDB Vault"}
               </span>
               <span className="text-[10px] bg-slate-800 px-1.5 py-0.5 rounded text-slate-400 font-mono">
                 {notes.length}
@@ -2063,6 +2321,7 @@ export default function App() {
                   onClick={() => {
                     setActiveNoteId(note.id);
                     setPreviewingWikiNode(null);
+                    setMobileSidebarOpen(false);
                   }}
                   className={`group flex items-center justify-between p-2 rounded-lg cursor-pointer text-xs transition ${
                     isActive
@@ -2264,16 +2523,20 @@ export default function App() {
         </aside>
 
         {/* WORKSPACE CENTER & RIGHT */}
-        <div className="flex-1 flex overflow-hidden relative">
+        <div
+          className={`workspace-center flex-1 flex overflow-hidden relative min-w-0 ${
+            viewMode === "split" ? "workspace-split" : ""
+          }`}
+        >
           {/* 1. GRAPH CANVAS WITH LOD GRID BACKGROUND */}
           {(viewMode === "canvas" || viewMode === "split") && (
             <div
-              className={`relative bg-[#090d16] flex-1 h-full overflow-hidden select-none ${
+              className={`workspace-graph relative bg-[#090d16] flex-1 h-full overflow-hidden select-none ${
                 viewMode === "split" ? "border-r border-slate-800/80" : ""
               }`}
             >
               {/* TOOLBAR */}
-              <div className="absolute top-3 left-3 z-10 flex items-center space-x-2 bg-slate-900/90 backdrop-blur-md p-2 rounded-xl border border-slate-800 text-xs text-slate-300 shadow-xl">
+              <div className="graph-toolbar absolute top-3 left-3 z-10 flex items-center space-x-2 bg-slate-900/90 backdrop-blur-md p-2 rounded-xl border border-slate-800 text-xs text-slate-300 shadow-xl">
                 <button
                   onClick={() => setIsPhysicsRunning(!isPhysicsRunning)}
                   className={`p-1.5 rounded-lg flex items-center space-x-1 text-xs font-semibold transition ${
@@ -2382,11 +2645,14 @@ export default function App() {
               {/* SVG GRAPH CANVAS WITH MULTI-SCALE LOD GRID */}
               <svg
                 ref={svgRef}
-                className={`w-full h-full ${isPanning ? "cursor-grabbing" : "cursor-grab"}`}
+                className={`w-full h-full touch-none ${
+                  isPanning ? "cursor-grabbing" : "cursor-grab"
+                }`}
                 onWheel={handleWheel}
-                onMouseDown={handleCanvasMouseDown}
-                onMouseMove={handleCanvasMouseMove}
-                onMouseUp={handleCanvasMouseUp}
+                onPointerDown={handleCanvasPointerDown}
+                onPointerMove={handleCanvasPointerMove}
+                onPointerUp={handleCanvasPointerUp}
+                onPointerCancel={handleCanvasPointerCancel}
               >
                 <defs>
                   {/* Fine Grid: 20px - Fades out on zoom out */}
@@ -2592,7 +2858,7 @@ export default function App() {
                         key={node.id}
                         data-node-id={node.id}
                         transform={`translate(${physicsObj.x}, ${physicsObj.y})`}
-                        onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
+                        onPointerDown={(e) => handleNodePointerDown(e, node.id)}
                         className={`cursor-pointer transition-opacity duration-300 ${
                           isMatch ? "opacity-100" : "opacity-15"
                         }`}
@@ -2710,7 +2976,7 @@ export default function App() {
 
               {/* MINI MAP */}
               {showMiniMap && (
-                <div className="absolute bottom-4 right-4 w-40 h-32 bg-slate-900/90 border border-slate-800 rounded-xl p-1 shadow-2xl pointer-events-none z-10 overflow-hidden">
+                <div className="mini-map absolute bottom-4 right-4 w-40 h-32 bg-slate-900/90 border border-slate-800 rounded-xl p-1 shadow-2xl pointer-events-none z-10 overflow-hidden">
                   <div className="text-[9px] font-bold text-slate-500 uppercase px-1 mb-0.5">
                     Mini-Map
                   </div>
@@ -2737,7 +3003,7 @@ export default function App() {
 
           {/* 2. MARKDOWN EDITOR & PREVIEW PANEL */}
           {(viewMode === "editor" || viewMode === "split") && (
-            <div className="flex-1 flex flex-col h-full bg-slate-950 overflow-hidden">
+            <div className="workspace-editor flex-1 flex flex-col h-full bg-slate-950 overflow-hidden min-w-0">
               {/* UNIMPORTED WIKIPEDIA STICKY PREVIEW BANNER */}
               {previewingWikiNode && (
                 <div className="bg-cyan-950/90 border-b border-cyan-500/40 px-4 py-2.5 flex items-center justify-between text-xs text-cyan-200 shrink-0 shadow-lg">
@@ -2790,7 +3056,7 @@ export default function App() {
               )}
 
               {/* EDITOR SUBHEADER */}
-              <div className="h-10 border-b border-slate-800/80 bg-slate-900/50 px-4 flex items-center justify-between shrink-0">
+              <div className="editor-subheader h-10 border-b border-slate-800/80 bg-slate-900/50 px-4 flex items-center justify-between shrink-0">
                 <div className="flex items-center space-x-2 truncate">
                   <FileText className="w-4 h-4 text-indigo-400 shrink-0" />
                   <span className="text-xs font-semibold text-slate-200 truncate">
@@ -2872,7 +3138,7 @@ export default function App() {
               </div>
 
               {/* EDITOR BODY */}
-              <div className="flex-1 flex flex-col overflow-hidden p-4 relative">
+              <div className="editor-body flex-1 flex flex-col overflow-hidden p-4 relative">
                 {previewingWikiNode ? (
                   /* UNIMPORTED WIKIPEDIA PREVIEW DISPLAY */
                   <div className="flex-1 bg-slate-900/40 border border-cyan-800/40 rounded-xl p-6 overflow-y-auto custom-scrollbar text-xs leading-relaxed space-y-4">
@@ -3013,7 +3279,11 @@ export default function App() {
 
                 {/* BACKLINKS & UNLINKED MENTIONS PANEL */}
                 {!previewingWikiNode && activeNote && (
-                  <div className="mt-2 border-t border-slate-800/80 pt-3 bg-slate-900/30 p-3 rounded-xl shrink-0">
+                  <div
+                    className={`editor-backlinks mt-2 border-t border-slate-800/80 pt-3 bg-slate-900/30 p-3 rounded-xl shrink-0 ${
+                      viewMode === "split" ? "mobile-split-backlinks" : ""
+                    }`}
+                  >
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center space-x-1.5">
                         <Layers className="w-3.5 h-3.5 text-indigo-400" />

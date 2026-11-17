@@ -1,0 +1,23 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SynapseWiki",
+  "version": "0.0.0",
+  "identifier": "com.synapsewiki.app",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "npm run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "SynapseWiki",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 560
+      }
+    ]
+  }
+}
