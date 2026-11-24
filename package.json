@@ -4,9 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "concurrently --kill-others --names worker,vite \"npm:dev:worker\" \"npm:dev:vite\"",
+    "dev:vite": "vite",
     "build": "vite build",
-    "dev:worker": "npm run build && wrangler dev",
+    "dev:worker": "npm run build && wrangler dev --ip 127.0.0.1 --port 8787 --var BETTER_AUTH_URL:http://localhost:5173",
     "deploy": "npm run build && wrangler deploy",
     "db:migrate:local": "wrangler d1 migrations apply synapsewiki --local",
     "db:migrate:remote": "wrangler d1 migrations apply synapsewiki --remote",
@@ -16,6 +17,7 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
+    "@react-oauth/google": "^0.13.5",
     "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-fs": "^2.7.1",
@@ -30,6 +32,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.2",
     "autoprefixer": "^10.6.1",
+    "concurrently": "^10.0.7",
     "oxlint": "^1.88.0",
     "postcss": "^8.5.31",
     "tailwindcss": "^3.4.19",

@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { oneTap } from "better-auth/plugins/one-tap";
 
 const jsonHeaders = {
   "Content-Type": "application/json; charset=utf-8",
@@ -42,6 +43,7 @@ function createAuth(env) {
         clientSecret: env.GOOGLE_CLIENT_SECRET,
       },
     },
+    plugins: [oneTap()],
   });
 }
 

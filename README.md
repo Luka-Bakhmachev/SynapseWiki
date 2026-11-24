@@ -25,7 +25,11 @@ Before deploying the Worker:
 
 1. Create a Google OAuth **Web application** client. Set the authorized
    JavaScript origin to `https://synapsewiki.lb605112714.workers.dev` and add
-   this redirect URI:
+   the same client ID to the Vite build environment as
+   `VITE_GOOGLE_CLIENT_ID`. The Google login button sends its ID token to the
+   Worker, where Better Auth verifies it before creating a session; the token
+   is never displayed in the page. You can also add this redirect URI for the
+   Better Auth OAuth callback:
    `https://synapsewiki.lb605112714.workers.dev/api/auth/callback/google`.
 2. In Google Account security, enable 2-Step Verification and add Google
    Authenticator if you want authenticator challenges. Sign-in delegates
@@ -53,11 +57,15 @@ Before deploying the Worker:
    npm run deploy
    ```
 
-For local Worker development, create an untracked `.dev.vars` file with
-`BETTER_AUTH_URL=http://localhost:8787`, a separate random
-`BETTER_AUTH_SECRET`, and Google OAuth credentials whose redirect URI is
-`http://localhost:8787/api/auth/callback/google`. Apply the local migration
-with `npm run db:migrate:local`, then run `npm run dev:worker`.
+For local development with Vite, set `VITE_GOOGLE_CLIENT_ID` in the ignored
+`.env` file and create an untracked `.dev.vars` file with a separate random
+`BETTER_AUTH_SECRET`, the matching `GOOGLE_CLIENT_ID`, and `GOOGLE_CLIENT_SECRET`.
+The local Google OAuth client needs the authorized JavaScript origin
+`http://localhost:5173` (and the redirect URI
+`http://localhost:5173/api/auth/callback/google` if using the OAuth callback).
+Apply the local migration with
+`npm run db:migrate:local`, then run `npm run dev` to start both Vite and the
+local API Worker. Vite proxies `/api` requests to the Worker on port 8787.
 
 ## Vite development
 

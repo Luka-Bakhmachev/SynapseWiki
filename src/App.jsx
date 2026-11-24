@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useContext, useEffect, useState } from "react";
 import { isTauri } from "@tauri-apps/api/core";
 import {
   ArrowRight,
@@ -24,6 +24,8 @@ import {
   Moon,
 } from "lucide-react";
 import { authClient } from "./authClient";
+import { SessionContext } from "./session/sessionContext";
+import { GoogleLogin } from "@react-oauth/google";
 import KnowledgeManagementApp from "./synapsewiki_knowledge_management_app.js";
 
 const features = [
@@ -240,7 +242,11 @@ export default function App() {
 }
 
 function WebApp() {
-  const { data: session, isPending, error } = authClient.useSession();
+  const sessionState = useContext(SessionContext);
+  if (!sessionState) {
+    throw new Error("The web app must be rendered inside a SessionProvider.");
+  }
+  const { data: session, isPending, error } = sessionState;
   return (
     <AppContent
       authEnabled
@@ -296,21 +302,39 @@ function AppContent({
     setShowWorkspace(true);
   };
 
-  const handleGoogleSignIn = async () => {
+  const handleGoogleSignIn = async (credentialResponse) => {
+    const idToken = credentialResponse?.credential;
+    if (!idToken) {
+      setSignInError("Google did not return a sign-in credential.");
+      return;
+    }
+
     setSignInError("");
     setIsSigningIn(true);
     try {
-      const { error } = await authClient.signIn.social({
-        provider: "google",
-        callbackURL: window.location.origin,
+      const response = await fetch("/api/auth/one-tap/callback", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          idToken,
+          callbackURL: window.location.origin,
+        }),
       });
-      if (error) {
-        setSignInError(error.message || "Google sign-in failed.");
-        setIsSigningIn(false);
+
+      const result = await response.json().catch(() => null);
+      if (!response.ok) {
+        throw new Error(
+          result?.message ||
+            result?.error ||
+            `Google sign-in failed (${response.status}).`,
+        );
       }
+
+      window.location.reload();
     } catch (error) {
       console.error("Google sign-in failed:", error);
-      setSignInError("Unable to start Google sign-in. Please try again.");
+      setSignInError(error.message || "Google sign-in failed. Please try again.");
       setIsSigningIn(false);
     }
   };
@@ -712,15 +736,34 @@ function AppContent({
                     {signInError || authError}
                   </p>
                 )}
-              <button
-                type="button"
-                onClick={handleGoogleSignIn}
-                disabled={isSigningIn || authPending}
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-3 text-sm font-bold text-white transition hover:bg-indigo-400 disabled:cursor-wait disabled:opacity-60"
-              >
-                {isSigningIn ? "Connecting to Google..." : "Continue with Google"}
-                {!isSigningIn && <ArrowRight className="h-4 w-4" />}
-              </button>
+                <div
+                  aria-busy={isSigningIn || authPending}
+                  className={
+                    isSigningIn || authPending
+                      ? "pointer-events-none opacity-60"
+                      : ""
+                  }
+                >
+                  <GoogleLogin
+                    onSuccess={handleGoogleSignIn}
+                    onError={() => {
+                      setIsSigningIn(false);
+                      setSignInError(
+                        "Google sign-in failed. Check the client ID and authorized origins.",
+                      );
+                    }}
+                    text="continue_with"
+                    size="large"
+                    theme="filled_blue"
+                    shape="rectangular"
+                    width={300}
+                  />
+                </div>
+                {isSigningIn && (
+                  <p className="mt-3 text-center text-sm text-slate-400" role="status">
+                    Connecting to Google...
+                  </p>
+                )}
               </>
             )}
 
