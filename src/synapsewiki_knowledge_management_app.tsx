@@ -81,6 +81,16 @@ import {
   saveAllNotesToDB,
   saveNoteToDB,
 } from "./vaultDb";
+import {
+  createProject as createAccountProject,
+  deleteProject as deleteAccountProject,
+  deleteProjectNote,
+  getProjectNotes,
+  listProjects,
+  renameProject as renameAccountProject,
+  replaceProjectNotes,
+  saveProjectNote,
+} from "./projectApi";
 
 // ==========================================
 // PRE-POPULATED DEMO VAULT NOTES
@@ -380,7 +390,7 @@ const fetchWikipediaArticleMedia = async (title) => {
 // ==========================================
 // MAIN SYNAPSEWIKI REACT APPLICATION
 // ==========================================
-export default function App({ onExit }) {
+export default function App({ onExit, theme, onToggleTheme, session }) {
   // ------------------------------------------
   // CONSOLIDATED SINGLE STATE HOOK DECLARATIONS
   // ------------------------------------------
@@ -390,6 +400,9 @@ export default function App({ onExit }) {
     isDesktopBuild ? null : "Browser IndexedDB",
   );
   const [vaultStorageError, setVaultStorageError] = useState(null);
+  const [cloudProjects, setCloudProjects] = useState([]);
+  const [cloudProjectId, setCloudProjectId] = useState(null);
+  const [isProjectBusy, setIsProjectBusy] = useState(false);
   const [activeNoteId, setActiveNoteId] = useState(null);
   const [viewMode, setViewMode] = useState("split"); // 'canvas' | 'split' | 'editor'
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
@@ -397,7 +410,6 @@ export default function App({ onExit }) {
   const [editorTab, setEditorTab] = useState("preview"); // 'edit' | 'preview'
   const [searchFilter, setSearchFilter] = useState("");
   const [selectedTag, setSelectedTag] = useState(null);
-
   // Wikipedia Search & Candidate Node State
   const [wikiSearchQuery, setWikiSearchQuery] = useState("");
   const [wikiSearchResults, setWikiSearchResults] = useState([]);
@@ -458,14 +470,80 @@ export default function App({ onExit }) {
     }, 3500);
   }, []);
 
+  const hasAccountStorage = !isDesktopBuild && Boolean(session?.user?.id);
+
   // Initialize the selected storage adapter on mount
   useEffect(() => {
+    let cancelled = false;
     const loadVault = async () => {
       try {
         const location = await getVaultLocation();
         setVaultLocation(location);
         if (isDesktopBuild && !location) {
           setNotes([]);
+          setIsDbInitialized(true);
+          return;
+        }
+
+        if (hasAccountStorage) {
+          setVaultLocation("Cloudflare account");
+          let localNotes = [];
+          try {
+            localNotes = await getAllNotesFromDB();
+          } catch (error) {
+            console.error("Could not read the local vault for account import:", error);
+          }
+
+          let projects = await listProjects();
+          if (projects.length === 0) {
+            const project = await createAccountProject("My SynapseWiki");
+            const notesToImport =
+              localNotes.length > 0 ? localNotes : INITIAL_DEMO_NOTES;
+            await replaceProjectNotes(project.id, notesToImport);
+            projects = [{ ...project, noteCount: notesToImport.length }];
+          }
+
+          let savedProjectId = null;
+          try {
+            savedProjectId = localStorage.getItem(
+              `synapsewiki.project.${session.user.id}`,
+            );
+          } catch (error) {
+            console.error("Could not read the selected account project:", error);
+          }
+          const selectedProject =
+            projects.find((project) => project.id === savedProjectId) ||
+            projects[0];
+          let accountNotes = await getProjectNotes(selectedProject.id);
+          if (accountNotes.length === 0) {
+            const starterNote = {
+              id: `note-${crypto.randomUUID()}`,
+              title: "Welcome",
+              path: "/Welcome.md",
+              content:
+                "# Welcome\n\nThis is your account-backed project. Create notes and they will be saved to your account.",
+              tags: [],
+              links: [],
+              isWikiImport: false,
+              updatedAt: new Date().toISOString(),
+            };
+            await saveProjectNote(selectedProject.id, starterNote);
+            accountNotes = [starterNote];
+          }
+
+          if (cancelled) return;
+          setCloudProjects(projects);
+          setCloudProjectId(selectedProject.id);
+          try {
+            localStorage.setItem(
+              `synapsewiki.project.${session.user.id}`,
+              selectedProject.id,
+            );
+          } catch (error) {
+            console.error("Could not save the selected account project:", error);
+          }
+          setNotes(accountNotes);
+          setActiveNoteId(accountNotes[0]?.id || null);
           setIsDbInitialized(true);
           return;
         }
@@ -482,7 +560,13 @@ export default function App({ onExit }) {
         setIsDbInitialized(true);
       } catch (err) {
         console.error("Vault storage initialization error:", err);
-        if (isDesktopBuild) {
+        if (hasAccountStorage) {
+          setVaultStorageError(err.message || "The account project could not be loaded.");
+          setNotes([]);
+          setActiveNoteId(null);
+          setIsDbInitialized(true);
+          addToast("Unable to load your cloud project. Please retry.", "error");
+        } else if (isDesktopBuild) {
           setVaultStorageError(err.message || "The selected vault folder is unavailable.");
           setVaultLocation(null);
           setNotes([]);
@@ -498,7 +582,179 @@ export default function App({ onExit }) {
       }
     };
     loadVault();
-  }, [addToast]);
+    return () => {
+      cancelled = true;
+    };
+  }, [addToast, hasAccountStorage, session?.user?.id]);
+
+  const persistNote = async (note) => {
+    if (hasAccountStorage) {
+      if (!cloudProjectId) throw new Error("No account project is selected.");
+      return saveProjectNote(cloudProjectId, note);
+    }
+    return saveNoteToDB(note);
+  };
+
+  const persistAllNotes = async (nextNotes) => {
+    if (hasAccountStorage) {
+      if (!cloudProjectId) throw new Error("No account project is selected.");
+      return replaceProjectNotes(cloudProjectId, nextNotes);
+    }
+    return saveAllNotesToDB(nextNotes);
+  };
+
+  const removePersistedNote = async (noteId) => {
+    if (hasAccountStorage) {
+      if (!cloudProjectId) throw new Error("No account project is selected.");
+      return deleteProjectNote(cloudProjectId, noteId);
+    }
+    return deleteNoteFromDB(noteId);
+  };
+
+  const rememberSelectedProject = (projectId) => {
+    if (!session?.user?.id) return;
+    try {
+      localStorage.setItem(
+        `synapsewiki.project.${session.user.id}`,
+        projectId,
+      );
+    } catch (error) {
+      console.error("Could not save the selected account project:", error);
+    }
+  };
+
+  const selectAccountProject = async (projectId) => {
+    setIsProjectBusy(true);
+    try {
+      const projectNotes = await getProjectNotes(projectId);
+      if (projectNotes.length === 0) {
+        const starterNote = {
+          id: `note-${crypto.randomUUID()}`,
+          title: "Welcome",
+          path: "/Welcome.md",
+          content:
+            "# Welcome\n\nThis is your account-backed project. Create notes and they will be saved to your account.",
+          tags: [],
+          links: [],
+          isWikiImport: false,
+          updatedAt: new Date().toISOString(),
+        };
+        await saveProjectNote(projectId, starterNote);
+        projectNotes.push(starterNote);
+      }
+      setCloudProjectId(projectId);
+      rememberSelectedProject(projectId);
+      setNotes(projectNotes);
+      setActiveNoteId(projectNotes[0]?.id || null);
+      setSearchFilter("");
+      setSelectedTag(null);
+    } catch (error) {
+      console.error("Account project switch failed:", error);
+      addToast(error.message || "Could not open that project.", "error");
+    } finally {
+      setIsProjectBusy(false);
+    }
+  };
+
+  const createAccountWorkspace = async () => {
+    const name = window.prompt("Name your new project");
+    if (!name?.trim()) return;
+
+    setIsProjectBusy(true);
+    try {
+      const project = await createAccountProject(name.trim());
+      const starterNote = {
+        id: `note-${crypto.randomUUID()}`,
+        title: "Welcome",
+        path: "/Welcome.md",
+        content:
+          "# Welcome\n\nThis is your account-backed project. Create notes and they will be saved to your account.",
+        tags: [],
+        links: [],
+        isWikiImport: false,
+        updatedAt: new Date().toISOString(),
+      };
+      await saveProjectNote(project.id, starterNote);
+      setCloudProjects((projects) => [project, ...projects]);
+      setCloudProjectId(project.id);
+      rememberSelectedProject(project.id);
+      setNotes([starterNote]);
+      setActiveNoteId(starterNote.id);
+      setSearchFilter("");
+      setSelectedTag(null);
+      addToast(`Created project "${project.name}"`, "success");
+    } catch (error) {
+      console.error("Account project creation failed:", error);
+      addToast(error.message || "Could not create that project.", "error");
+    } finally {
+      setIsProjectBusy(false);
+    }
+  };
+
+  const renameAccountWorkspace = async () => {
+    const currentProject = cloudProjects.find(
+      (project) => project.id === cloudProjectId,
+    );
+    if (!currentProject) return;
+    const name = window.prompt("Rename project", currentProject.name);
+    if (!name?.trim() || name.trim() === currentProject.name) return;
+
+    setIsProjectBusy(true);
+    try {
+      const updatedProject = await renameAccountProject(
+        currentProject.id,
+        name.trim(),
+      );
+      setCloudProjects((projects) =>
+        projects.map((project) =>
+          project.id === updatedProject.id
+            ? { ...project, ...updatedProject }
+            : project,
+        ),
+      );
+      addToast("Project renamed.", "success");
+    } catch (error) {
+      console.error("Account project rename failed:", error);
+      addToast(error.message || "Could not rename that project.", "error");
+    } finally {
+      setIsProjectBusy(false);
+    }
+  };
+
+  const deleteAccountWorkspace = async () => {
+    const currentProject = cloudProjects.find(
+      (project) => project.id === cloudProjectId,
+    );
+    if (!currentProject) return;
+    if (cloudProjects.length <= 1) {
+      addToast("Keep at least one account project.", "warning");
+      return;
+    }
+    if (
+      !window.confirm(
+        `Delete "${currentProject.name}" and all of its cloud notes? This cannot be undone.`,
+      )
+    ) {
+      return;
+    }
+
+    setIsProjectBusy(true);
+    try {
+      await deleteAccountProject(currentProject.id);
+      const remainingProjects = cloudProjects.filter(
+        (project) => project.id !== currentProject.id,
+      );
+      setCloudProjects(remainingProjects);
+      const nextProject = remainingProjects[0];
+      await selectAccountProject(nextProject.id);
+      addToast(`Deleted project "${currentProject.name}".`, "success");
+    } catch (error) {
+      console.error("Account project deletion failed:", error);
+      addToast(error.message || "Could not delete that project.", "error");
+    } finally {
+      setIsProjectBusy(false);
+    }
+  };
 
   const activeNote = useMemo(() => {
     return notes.find((n) => n.id === activeNoteId) || notes[0];
@@ -699,7 +955,7 @@ export default function App({ onExit }) {
           if (!Array.isArray(parsed)) {
             throw new Error("The backup must contain an array of notes.");
           }
-          await saveAllNotesToDB(parsed);
+          await persistAllNotes(parsed);
           setNotes(parsed);
           if (parsed.length > 0) setActiveNoteId(parsed[0].id);
           addToast(
@@ -933,7 +1189,7 @@ export default function App({ onExit }) {
     };
 
     try {
-      await saveNoteToDB(newNote);
+      await persistNote(newNote);
     } catch (err) {
       console.error("Wikipedia note save error:", err);
       addToast(`Failed to save "${wikiNode.title}"`, "error");
@@ -1012,7 +1268,7 @@ export default function App({ onExit }) {
           links: extractWikilinks(extendedContent),
           updatedAt: new Date().toISOString(),
         };
-        await saveNoteToDB(updatedNote);
+        await persistNote(updatedNote);
         const newNotes = [...notes];
         newNotes[existingIndex] = updatedNote;
         setNotes(newNotes);
@@ -1032,7 +1288,7 @@ export default function App({ onExit }) {
           isWikiImport: true,
           updatedAt: new Date().toISOString(),
         };
-        await saveNoteToDB(newNote);
+        await persistNote(newNote);
         setNotes((prev) => [...prev, newNote]);
         setActiveNoteId(newNote.id);
         setPreviewingWikiNode(null);
@@ -1065,7 +1321,7 @@ export default function App({ onExit }) {
       prevNotes.map((item) => (item.id === noteId ? updated : item)),
     );
     try {
-      await saveNoteToDB(updated);
+      await persistNote(updated);
     } catch (err) {
       console.error("Note save error:", err);
       addToast(`Failed to save "${note.title}"`, "error");
@@ -1129,7 +1385,7 @@ export default function App({ onExit }) {
     };
 
     try {
-      await saveNoteToDB(newNote);
+      await persistNote(newNote);
     } catch (err) {
       console.error("Note creation error:", err);
       addToast(`Failed to save "${finalTitle}"`, "error");
@@ -1153,7 +1409,7 @@ export default function App({ onExit }) {
     }
 
     try {
-      await deleteNoteFromDB(noteId);
+      await removePersistedNote(noteId);
     } catch (err) {
       console.error("Note deletion error:", err);
       addToast(`Failed to delete "${target.title}"`, "error");
@@ -1216,8 +1472,16 @@ export default function App({ onExit }) {
   };
 
   const resetDemoVault = async () => {
+    if (
+      hasAccountStorage &&
+      !window.confirm(
+        "Reset this account project to the demo notes? This replaces its current notes.",
+      )
+    ) {
+      return;
+    }
     try {
-      await saveAllNotesToDB(INITIAL_DEMO_NOTES);
+      await persistAllNotes(INITIAL_DEMO_NOTES);
     } catch (err) {
       console.error("Vault reset error:", err);
       addToast("Failed to reset the vault", "error");
@@ -1999,6 +2263,15 @@ export default function App({ onExit }) {
     <div className="app-shell flex flex-col h-screen w-full bg-slate-950 text-slate-100 font-sans overflow-hidden select-none">
       {/* HEADER NAVBAR */}
       <header className="app-header relative h-14 border-b border-slate-800/80 bg-slate-900/90 backdrop-blur-md px-4 flex items-center justify-between z-30 shrink-0">
+        <button
+          type="button"
+          onClick={onToggleTheme}
+          className="theme-toggle rounded-lg border border-slate-800 bg-slate-950/70 px-3 py-1.5 text-sm text-slate-300 hover:text-slate-900"
+          aria-label={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+          title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+        >
+          {theme === "dark" ? "Light" : "Dark"}
+        </button>
         <div className="app-brand flex items-center space-x-3">
           {onExit && (
             <button
@@ -2050,6 +2323,55 @@ export default function App({ onExit }) {
         </div>
 
         <div className="header-actions flex items-center space-x-3">
+          {hasAccountStorage && (
+            <div className="project-controls flex items-center gap-1">
+              <select
+                value={cloudProjectId || ""}
+                onChange={(event) =>
+                  selectAccountProject(event.target.value)
+                }
+                disabled={isProjectBusy || cloudProjects.length === 0}
+                aria-label="Select account project"
+                className="max-w-36 rounded-lg border border-slate-800 bg-slate-950/80 px-2 py-1.5 text-xs text-slate-200"
+              >
+                {cloudProjects.map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={createAccountWorkspace}
+                disabled={isProjectBusy}
+                className="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-slate-300 hover:text-white disabled:opacity-50"
+                aria-label="Create project"
+                title="Create project"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={renameAccountWorkspace}
+                disabled={isProjectBusy || !cloudProjectId}
+                className="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-slate-300 hover:text-white disabled:opacity-50"
+                aria-label="Rename project"
+                title="Rename project"
+              >
+                <Edit3 className="h-4 w-4" />
+              </button>
+              <button
+                type="button"
+                onClick={deleteAccountWorkspace}
+                disabled={isProjectBusy || cloudProjects.length <= 1}
+                className="rounded-lg border border-slate-800 bg-slate-900 px-2 py-1.5 text-xs text-slate-300 hover:text-rose-400 disabled:opacity-50"
+                aria-label="Delete project"
+                title="Delete project"
+              >
+                <Trash2 className="h-4 w-4" />
+              </button>
+            </div>
+          )}
           <div className="view-mode-control flex bg-slate-950/80 p-1 rounded-lg border border-slate-800/80 text-xs font-medium">
             <button
               onClick={() => setViewMode("canvas")}
@@ -2127,9 +2449,9 @@ export default function App({ onExit }) {
           ) : (
             <span
               className="hidden xl:inline text-[10px] text-slate-500"
-              title="Browser IndexedDB storage"
+              title={hasAccountStorage ? "Projects are saved to your account" : "Browser IndexedDB storage"}
             >
-              IndexedDB
+              {hasAccountStorage ? "Cloud sync" : "IndexedDB"}
             </span>
           )}
 
@@ -2533,7 +2855,7 @@ export default function App({ onExit }) {
             <div
               className={`workspace-graph relative bg-[#090d16] flex-1 h-full overflow-hidden select-none ${
                 viewMode === "split" ? "border-r border-slate-800/80" : ""
-              }`}
+              } ${theme === "light" ? "light" : ""}`}
             >
               {/* TOOLBAR */}
               <div className="graph-toolbar absolute top-3 left-3 z-10 flex items-center space-x-2 bg-slate-900/90 backdrop-blur-md p-2 rounded-xl border border-slate-800 text-xs text-slate-300 shadow-xl">
@@ -2667,7 +2989,7 @@ export default function App({ onExit }) {
                     <path
                       d={`M ${20 * zoomLevel} 0 L 0 0 0 ${20 * zoomLevel}`}
                       fill="none"
-                      stroke="#1e293b"
+                      stroke={theme === "light" ? "#e2e8f0" : "#1e293b"}
                       strokeWidth="0.5"
                       strokeOpacity={Math.max(
                         0,
@@ -2687,7 +3009,7 @@ export default function App({ onExit }) {
                     <path
                       d={`M ${100 * zoomLevel} 0 L 0 0 0 ${100 * zoomLevel}`}
                       fill="none"
-                      stroke="#334155"
+                      stroke={theme === "light" ? "#cbd5e1" : "#334155"}
                       strokeWidth="1"
                       strokeOpacity={Math.max(0.15, Math.min(0.8, zoomLevel))}
                     />
@@ -2704,7 +3026,7 @@ export default function App({ onExit }) {
                     <path
                       d={`M ${500 * zoomLevel} 0 L 0 0 0 ${500 * zoomLevel}`}
                       fill="none"
-                      stroke="#475569"
+                      stroke={theme === "light" ? "#94a3b8" : "#475569"}
                       strokeWidth="1.5"
                       strokeOpacity="0.4"
                     />
@@ -2743,7 +3065,7 @@ export default function App({ onExit }) {
                 <rect
                   width="100%"
                   height="100%"
-                  fill="#090d16"
+                  fill={theme === "light" ? "#f1f5f9" : "#090d16"}
                   data-canvas-bg="true"
                 />
                 <rect

@@ -18,9 +18,12 @@ import {
   Search,
   Shield,
   Sparkles,
+  Sun,
   Split,
   X,
+  Moon,
 } from "lucide-react";
+import { authClient } from "./authClient";
 import KnowledgeManagementApp from "./synapsewiki_knowledge_management_app.js";
 
 const features = [
@@ -211,10 +214,72 @@ function ProductPreview() {
   );
 }
 
+function ThemeToggle({ theme, onToggle }) {
+  const nextTheme = theme === "dark" ? "light" : "dark";
+  const Icon = theme === "dark" ? Sun : Moon;
+
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="theme-toggle inline-flex items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-800 hover:text-white"
+      aria-label={`Switch to ${nextTheme} theme`}
+      title={`Switch to ${nextTheme} theme`}
+    >
+      <Icon className="h-4 w-4" />
+      <span>{theme === "dark" ? "Light" : "Dark"}</span>
+    </button>
+  );
+}
+
 export default function App() {
+  if (isTauri()) {
+    return <AppContent authEnabled={false} session={null} />;
+  }
+  return <WebApp />;
+}
+
+function WebApp() {
+  const { data: session, isPending, error } = authClient.useSession();
+  return (
+    <AppContent
+      authEnabled
+      authPending={isPending}
+      authError={error?.message || ""}
+      session={session?.user ? session : null}
+    />
+  );
+}
+
+function AppContent({
+  authEnabled,
+  authPending = false,
+  authError = "",
+  session,
+}) {
   const isDesktopApp = isTauri();
   const [showWorkspace, setShowWorkspace] = useState(false);
+  const [showLandingForAccount, setShowLandingForAccount] = useState(false);
   const [isSignInOpen, setIsSignInOpen] = useState(false);
+  const [isSigningIn, setIsSigningIn] = useState(false);
+  const [signInError, setSignInError] = useState("");
+  const [theme, setTheme] = useState(() => {
+    try {
+      return localStorage.getItem("theme") === "light" ? "light" : "dark";
+    } catch (error) {
+      console.error("Could not read the saved theme preference:", error);
+      return "dark";
+    }
+  });
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("light", theme === "light");
+    try {
+      localStorage.setItem("theme", theme);
+    } catch (error) {
+      console.error("Could not save the theme preference:", error);
+    }
+  }, [theme]);
 
   useEffect(() => {
     if (!isSignInOpen) return undefined;
@@ -227,17 +292,56 @@ export default function App() {
 
   const enterWorkspace = () => {
     setIsSignInOpen(false);
+    setShowLandingForAccount(false);
     setShowWorkspace(true);
   };
 
-  const handleDemoSignIn = (event) => {
-    event.preventDefault();
-    enterWorkspace();
+  const handleGoogleSignIn = async () => {
+    setSignInError("");
+    setIsSigningIn(true);
+    try {
+      const { error } = await authClient.signIn.social({
+        provider: "google",
+        callbackURL: window.location.origin,
+      });
+      if (error) {
+        setSignInError(error.message || "Google sign-in failed.");
+        setIsSigningIn(false);
+      }
+    } catch (error) {
+      console.error("Google sign-in failed:", error);
+      setSignInError("Unable to start Google sign-in. Please try again.");
+      setIsSigningIn(false);
+    }
   };
 
-  if (showWorkspace) {
+  const handleSignOut = async () => {
+    try {
+      const { error } = await authClient.signOut();
+      if (error) throw new Error(error.message || "Sign out failed.");
+      setShowWorkspace(false);
+      setShowLandingForAccount(false);
+    } catch (error) {
+      console.error("Sign out failed:", error);
+      setSignInError("Unable to sign out. Please try again.");
+    }
+  };
+
+  if (showWorkspace || (session?.user?.id && !showLandingForAccount)) {
     return (
-      <KnowledgeManagementApp onExit={() => setShowWorkspace(false)} />
+      <KnowledgeManagementApp
+        onExit={() => {
+          setShowWorkspace(false);
+          setShowLandingForAccount(Boolean(session?.user?.id));
+        }}
+        theme={theme}
+        session={session}
+        onToggleTheme={() =>
+          setTheme((currentTheme) =>
+            currentTheme === "dark" ? "light" : "dark",
+          )
+        }
+      />
     );
   }
 
@@ -271,12 +375,45 @@ export default function App() {
           </nav>
 
           <div className="flex items-center gap-2">
-            <button
-              onClick={() => setIsSignInOpen(true)}
-              className="whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-800 hover:text-white sm:px-4"
-            >
-              Sign in
-            </button>
+            <ThemeToggle
+              theme={theme}
+              onToggle={() =>
+                setTheme((currentTheme) =>
+                  currentTheme === "dark" ? "light" : "dark",
+                )
+              }
+            />
+            {session?.user ? (
+              <>
+                <button
+                  type="button"
+                  onClick={enterWorkspace}
+                  className="whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-800 hover:text-white sm:px-4"
+                >
+                  Open workspace
+                </button>
+                <span className="hidden max-w-36 truncate text-xs text-slate-400 sm:inline">
+                  {session.user.name || session.user.email}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleSignOut}
+                  className="whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-800 hover:text-white sm:px-4"
+                >
+                  Sign out
+                </button>
+              </>
+            ) : authEnabled ? (
+              <button
+                onClick={() => {
+                  setSignInError("");
+                  setIsSignInOpen(true);
+                }}
+                className="whitespace-nowrap rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition hover:bg-slate-800 hover:text-white sm:px-4"
+              >
+                Sign in
+              </button>
+            ) : null}
             <button
               onClick={enterWorkspace}
               className="inline-flex whitespace-nowrap items-center gap-2 rounded-lg bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow-lg shadow-indigo-950/50 transition hover:bg-indigo-400 sm:px-4"
@@ -546,7 +683,7 @@ export default function App() {
                   Welcome to SynapseWiki
                 </h2>
                 <p className="mt-1 text-sm text-slate-400">
-                  Sign in to explore the demo workspace.
+                  Sign in to save projects to your account.
                 </p>
               </div>
               <button
@@ -558,42 +695,34 @@ export default function App() {
               </button>
             </div>
 
-            <div className="mb-5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-100/80">
-              Demo access only. Accounts aren&apos;t connected yet; these
-              fields are not sent or saved.
-            </div>
-
-            <form onSubmit={handleDemoSignIn} className="space-y-4">
-              <label className="block space-y-1.5 text-sm font-medium text-slate-300">
-                Email
-                <input
-                  type="email"
-                  name="email"
-                  autoComplete="email"
-                  required
-                  autoFocus
-                  placeholder="you@example.com"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-indigo-400"
-                />
-              </label>
-              <label className="block space-y-1.5 text-sm font-medium text-slate-300">
-                Password
-                <input
-                  type="password"
-                  name="password"
-                  autoComplete="current-password"
-                  required
-                  placeholder="Enter any demo password"
-                  className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-indigo-400"
-                />
-              </label>
+            {!authEnabled ? (
+              <div className="mb-5 rounded-xl border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-amber-100/80">
+                Account sync is available in the web app. The desktop app
+                continues to use its local vault.
+              </div>
+            ) : (
+              <>
+                <div className="mb-5 rounded-xl border border-slate-700 bg-slate-950/60 p-3 text-xs leading-5 text-slate-300">
+                  Sign in with Google. For Google Authenticator verification,
+                  enable 2-Step Verification on your Google account and add
+                  Authenticator there.
+                </div>
+                {(signInError || authError) && (
+                  <p className="mb-4 text-sm text-rose-400" role="alert">
+                    {signInError || authError}
+                  </p>
+                )}
               <button
-                type="submit"
-                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-3 text-sm font-bold text-white transition hover:bg-indigo-400"
+                type="button"
+                onClick={handleGoogleSignIn}
+                disabled={isSigningIn || authPending}
+                className="inline-flex w-full items-center justify-center gap-2 rounded-lg bg-indigo-500 px-4 py-3 text-sm font-bold text-white transition hover:bg-indigo-400 disabled:cursor-wait disabled:opacity-60"
               >
-                Continue to demo <ArrowRight className="h-4 w-4" />
+                {isSigningIn ? "Connecting to Google..." : "Continue with Google"}
+                {!isSigningIn && <ArrowRight className="h-4 w-4" />}
               </button>
-            </form>
+              </>
+            )}
 
             <div className="mt-5 text-center">
               <button

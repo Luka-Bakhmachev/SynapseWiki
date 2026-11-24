@@ -1,0 +1,25 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "synapsewiki",
+  "main": "./src/worker/index.js",
+  "compatibility_date": "2026-11-24",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": {
+    "BETTER_AUTH_URL": "https://synapsewiki.lb605112714.workers.dev"
+  },
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "synapsewiki",
+      "database_id": "be972ca7-01ff-48a3-88a6-8a461c87c1b0",
+      "migrations_dir": "migrations"
+    }
+  ]
+}

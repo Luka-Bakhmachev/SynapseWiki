@@ -6,6 +6,10 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "dev:worker": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
+    "db:migrate:local": "wrangler d1 migrations apply synapsewiki --local",
+    "db:migrate:remote": "wrangler d1 migrations apply synapsewiki --remote",
     "lint": "oxlint",
     "preview": "vite preview",
     "tauri:dev": "tauri dev",
@@ -15,6 +19,7 @@
     "@tauri-apps/api": "^2.12.5",
     "@tauri-apps/plugin-dialog": "^2.8.4",
     "@tauri-apps/plugin-fs": "^2.7.1",
+    "better-auth": "^1.7.27",
     "lucide-react": "^1.74.0",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
@@ -28,6 +33,7 @@
     "oxlint": "^1.88.0",
     "postcss": "^8.5.31",
     "tailwindcss": "^3.4.19",
-    "vite": "^8.3.4"
+    "vite": "^8.3.4",
+    "wrangler": "^4.168.0"
   }
 }
